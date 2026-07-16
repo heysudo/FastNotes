@@ -42,6 +42,7 @@ type noteRec struct {
 	Blob      string `json:"blob,omitempty"` // base64 ciphertext
 	UpdatedAt int64  `json:"updated_at"`     // unix ms, server-assigned
 	Deleted   bool   `json:"deleted,omitempty"`
+	Version   int    `json:"version"` // monotonic per-note; drives optimistic concurrency
 }
 
 func main() {
@@ -70,6 +71,7 @@ func main() {
 		log.Fatal(err)
 	}
 	loadAuthHash()
+	initEvents()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/bootstrap", handleBootstrap)
@@ -82,6 +84,8 @@ func main() {
 	mux.HandleFunc("DELETE /api/images/{id}", auth(handleDeleteImage))
 	mux.HandleFunc("GET /api/export", auth(handleExport))
 	mux.HandleFunc("POST /api/ai/cover", auth(handleAICover))
+	mux.HandleFunc("POST /api/events/ticket", auth(handleEventTicket))
+	mux.HandleFunc("GET /api/events", handleEvents) // auth via ticket query param (EventSource can't set headers)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("ok")) })
 
 	// Static frontend (embedded).
@@ -278,21 +282,40 @@ func handlePutNote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Blob string `json:"blob"`
+		Blob        string `json:"blob"`
+		BaseVersion int    `json:"base_version"` // version this edit was based on
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 2<<20)).Decode(&req); err != nil || req.Blob == "" {
 		http.Error(w, `{"error":"bad request"}`, http.StatusBadRequest)
 		return
 	}
-	n := noteRec{ID: id, Blob: req.Blob, UpdatedAt: time.Now().UnixMilli()}
-	buf, _ := json.Marshal(n)
-	if err := db.Update(func(tx *bolt.Tx) error {
-		return tx.Bucket(bNotes).Put([]byte(id), buf)
-	}); err != nil {
+	var saved noteRec
+	var conflict *noteRec
+	err := db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bNotes)
+		var cur noteRec
+		if v := b.Get([]byte(id)); v != nil {
+			json.Unmarshal(v, &cur)
+		}
+		// Optimistic concurrency: only accept a write based on the current version.
+		if cur.Version != req.BaseVersion {
+			c := cur
+			conflict = &c
+			return nil
+		}
+		saved = noteRec{ID: id, Blob: req.Blob, UpdatedAt: time.Now().UnixMilli(), Version: cur.Version + 1}
+		return b.Put([]byte(id), mustJSON(saved))
+	})
+	if err != nil {
 		http.Error(w, `{"error":"db"}`, http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, map[string]any{"ok": true, "updated_at": n.UpdatedAt})
+	if conflict != nil {
+		writeJSONStatus(w, http.StatusConflict, map[string]any{"error": "conflict", "note": conflict})
+		return
+	}
+	events.broadcast(id, saved.Version, r.Header.Get("X-Client-Id"))
+	writeJSON(w, map[string]any{"ok": true, "version": saved.Version, "updated_at": saved.UpdatedAt})
 }
 
 func handleDeleteNote(w http.ResponseWriter, r *http.Request) {
@@ -301,14 +324,21 @@ func handleDeleteNote(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"bad id"}`, http.StatusBadRequest)
 		return
 	}
-	n := noteRec{ID: id, UpdatedAt: time.Now().UnixMilli(), Deleted: true}
-	buf, _ := json.Marshal(n)
+	var ver int
 	if err := db.Update(func(tx *bolt.Tx) error {
-		return tx.Bucket(bNotes).Put([]byte(id), buf) // tombstone for sync
+		b := tx.Bucket(bNotes)
+		var cur noteRec
+		if v := b.Get([]byte(id)); v != nil {
+			json.Unmarshal(v, &cur)
+		}
+		ver = cur.Version + 1
+		// Delete is an explicit user action — it always wins (bumps version, tombstones).
+		return b.Put([]byte(id), mustJSON(noteRec{ID: id, UpdatedAt: time.Now().UnixMilli(), Deleted: true, Version: ver}))
 	}); err != nil {
 		http.Error(w, `{"error":"db"}`, http.StatusInternalServerError)
 		return
 	}
+	events.broadcast(id, ver, r.Header.Get("X-Client-Id"))
 	writeJSON(w, map[string]any{"ok": true})
 }
 
@@ -409,4 +439,15 @@ func validID(id string) bool {
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(v)
+}
+
+func writeJSONStatus(w http.ResponseWriter, code int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(v)
+}
+
+func mustJSON(v any) []byte {
+	b, _ := json.Marshal(v)
+	return b
 }

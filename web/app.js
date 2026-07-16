@@ -43,7 +43,12 @@ const idb = (() => {
 
 /* ================= state ================= */
 const notes = new Map();      // id -> {id, title, md, color, pinned, images:[], cover, created, updated}
-const srvMeta = new Map();    // id -> server updated_at
+const srvMeta = new Map();    // id -> {version, updated_at} last known from server
+const CLIENT_ID = FNCrypto.newId(); // identifies this tab so we ignore our own SSE echoes
+let es = null;                // EventSource for real-time push
+const srvVersion = (id) => (srvMeta.get(id) || {}).version || 0;
+const srvUpdated = (id) => (srvMeta.get(id) || {}).updated_at || 0;
+const setSrvMeta = (id, version, updated_at) => srvMeta.set(id, { version, updated_at });
 const imgURLs = new Map();    // imageId -> decrypted object URL
 let currentId = null;         // note open in editor
 let editMode = false;
@@ -72,10 +77,10 @@ const toast = (msg) => {
 
 /* ================= API ================= */
 async function api(path, opts = {}) {
-  opts.headers = Object.assign({ 'Authorization': 'Bearer ' + FNCrypto.token() }, opts.headers || {});
+  opts.headers = Object.assign({ 'Authorization': 'Bearer ' + FNCrypto.token(), 'X-Client-Id': CLIENT_ID }, opts.headers || {});
   const r = await fetch(path, opts);
   if (r.status === 401) { hardLock('Wrong password or session expired.'); throw new Error('unauthorized'); }
-  if (!r.ok) throw new Error('api ' + r.status);
+  if (!r.ok && r.status !== 409) throw new Error('api ' + r.status);
   return r;
 }
 
@@ -179,6 +184,7 @@ async function boot() {
 
 function hardLock(msg) {
   FNCrypto.lock();
+  if (es) { es.close(); es = null; }
   if (msg) sessionStorage.setItem('fn-msg', msg);
   location.reload();
 }
@@ -219,9 +225,19 @@ async function enterApp() {
     try {
       const obj = await FNCrypto.decryptJSON(rec.blob);
       notes.set(rec.id, obj);
-      srvMeta.set(rec.id, rec.updated_at);
+      setSrvMeta(rec.id, rec.version || 0, rec.updated_at || 0);
     } catch (e) { /* wrong-key record; skip */ }
   }
+  // replay queued offline edits over the confirmed base so memory reflects them
+  try {
+    for (const op of await idb.all('pending')) {
+      if (op.kind === 'put' && op.blob) {
+        try { notes.set(op.id, await FNCrypto.decryptJSON(op.blob)); } catch (e) {}
+      } else if (op.kind === 'del') {
+        notes.delete(op.id);
+      }
+    }
+  } catch (e) {}
   try {
     const bs = await (await fetch('/api/bootstrap')).json();
     aiOn = !!bs.ai;
@@ -232,13 +248,162 @@ async function enterApp() {
   renderBoard();
   wireUI();
   watchAutoLock();
-  syncNow().catch(() => {});
-  setInterval(() => syncNow().catch(() => {}), 30000);
+  await syncNow().catch(() => {});
+  startEvents();                                       // real-time push
+  setInterval(() => syncNow().catch(() => {}), 30000); // safety-net poll (SSE handles real-time)
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) syncNow().catch(() => {});
   });
   const msg = sessionStorage.getItem('fn-msg');
   if (msg) { sessionStorage.removeItem('fn-msg'); toast(msg); }
+}
+
+/* ================= 3-way merge (no-data-loss conflicts) ================= */
+function _matchMap(o, x) {
+  const m = o.length, n = x.length;
+  const dp = Array.from({ length: m + 1 }, () => new Int32Array(n + 1));
+  for (let i = m - 1; i >= 0; i--)
+    for (let j = n - 1; j >= 0; j--)
+      dp[i][j] = o[i] === x[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+  const map = new Map();
+  let i = 0, j = 0;
+  while (i < m && j < n) {
+    if (o[i] === x[j]) { map.set(i, j); i++; j++; }
+    else if (dp[i + 1][j] >= dp[i][j + 1]) i++; else j++;
+  }
+  return map;
+}
+function _eqArr(p, q) {
+  if (p.length !== q.length) return false;
+  for (let i = 0; i < p.length; i++) if (p[i] !== q[i]) return false;
+  return true;
+}
+// diff3 line merge; returns {ok:true,text} or {ok:false} on overlapping edits.
+function diff3(oText, aText, bText) {
+  const o = (oText || '').split('\n'), a = (aText || '').split('\n'), b = (bText || '').split('\n');
+  const ma = _matchMap(o, a), mb = _matchMap(o, b);
+  const anchors = [];
+  let lastA = -1, lastB = -1;
+  for (let i = 0; i < o.length; i++) {
+    if (ma.has(i) && mb.has(i)) {
+      const ai = ma.get(i), bi = mb.get(i);
+      if (ai > lastA && bi > lastB) { anchors.push([i, ai, bi]); lastA = ai; lastB = bi; }
+    }
+  }
+  anchors.push([o.length, a.length, b.length]);
+  const out = [];
+  let oi = 0, ai = 0, bi = 0;
+  for (const [oe, ae, be] of anchors) {
+    const oreg = o.slice(oi, oe), areg = a.slice(ai, ae), breg = b.slice(bi, be);
+    const aCh = !_eqArr(oreg, areg), bCh = !_eqArr(oreg, breg);
+    if (!aCh && !bCh) out.push(...oreg);
+    else if (aCh && !bCh) out.push(...areg);
+    else if (!aCh && bCh) out.push(...breg);
+    else if (_eqArr(areg, breg)) out.push(...areg);
+    else return { ok: false };
+    if (oe < o.length) out.push(o[oe]);
+    oi = oe + 1; ai = ae + 1; bi = be + 1;
+  }
+  return { ok: true, text: out.join('\n') };
+}
+function noteSig(n) {
+  return JSON.stringify([n.title || '', n.md || '', n.color || 'default', !!n.pinned, n.cover || null, n.images || []]);
+}
+const sameNote = (x, y) => noteSig(x) === noteSig(y);
+function fieldMerge(o, a, b) { // scalar three-way
+  if (a === b) return { ok: true, v: a };
+  if (a === o) return { ok: true, v: b };
+  if (b === o) return { ok: true, v: a };
+  return { ok: false };
+}
+// merge3: base/local/remote note objects -> merged note, or null on hard conflict.
+function merge3(base, local, remote) {
+  const title = fieldMerge(base.title || '', local.title || '', remote.title || '');
+  if (!title.ok) return null; // divergent titles: keep both via conflict-copy
+  let md;
+  if (local.md === remote.md) md = local.md;
+  else if (local.md === base.md) md = remote.md;
+  else if (remote.md === base.md) md = local.md;
+  else {
+    const d = diff3(base.md, local.md, remote.md);
+    if (!d.ok) return null;
+    md = d.text;
+  }
+  const color = fieldMerge(base.color || 'default', local.color || 'default', remote.color || 'default');
+  const pinned = fieldMerge(!!base.pinned, !!local.pinned, !!remote.pinned);
+  const cover = fieldMerge(base.cover || null, local.cover || null, remote.cover || null);
+  const images = [...new Set([...(local.images || []), ...(remote.images || [])])]; // union: never drop an image
+  return {
+    title: title.v,
+    md,
+    color: color.ok ? color.v : (local.color || 'default'),
+    pinned: pinned.ok ? pinned.v : !!local.pinned,
+    cover: cover.ok ? cover.v : (local.cover || remote.cover || null),
+    images,
+    created: base.created || local.created || Date.now(),
+    updated: Date.now(),
+  };
+}
+
+// reconcile a server record against local state without ever losing data.
+async function reconcile(id, remote) {
+  const local = notes.get(id);
+  const cached = await idb.get('notes', id);
+  let base = null;
+  if (cached && cached.blob) { try { base = await FNCrypto.decryptJSON(cached.blob); } catch (e) {} }
+
+  if (remote.deleted) {
+    if (local && base && !sameNote(local, base)) {
+      // deleted elsewhere but we have unsaved local edits — resurrect (local wins).
+      setSrvMeta(id, remote.version, remote.updated_at);
+      await saveNote(id);
+    } else {
+      notes.delete(id);
+      setSrvMeta(id, remote.version, remote.updated_at);
+      await idb.put('notes', { id, deleted: true, updated_at: remote.updated_at, version: remote.version });
+      if (currentId === id) closeEditor();
+    }
+    renderBoard();
+    return;
+  }
+
+  let remoteObj;
+  try { remoteObj = await FNCrypto.decryptJSON(remote.blob); }
+  catch (e) { return; } // can't decrypt (shouldn't happen) — leave local untouched
+
+  const adopt = async () => {
+    notes.set(id, remoteObj);
+    setSrvMeta(id, remote.version, remote.updated_at);
+    await idb.put('notes', { id, blob: remote.blob, updated_at: remote.updated_at, version: remote.version });
+  };
+
+  if (!local || (base && sameNote(local, base)) ) {
+    await adopt();                       // no local changes → take server version
+  } else if (sameNote(local, remoteObj)) {
+    setSrvMeta(id, remote.version, remote.updated_at); // same content, just track version
+    await idb.put('notes', { id, blob: remote.blob, updated_at: remote.updated_at, version: remote.version });
+  } else {
+    const merged = base ? merge3(base, local, remoteObj) : null;
+    if (merged) {
+      notes.set(id, merged);
+      setSrvMeta(id, remote.version, remote.updated_at); // push merged onto the current server version
+      await idb.put('notes', { id, blob: remote.blob, updated_at: remote.updated_at, version: remote.version });
+      await saveNote(id); // re-encrypts merged and queues a versioned push
+    } else {
+      await adopt(); // server wins as the canonical note...
+      const copyId = FNCrypto.newId();
+      const copy = Object.assign({}, local, {
+        title: (local.title ? local.title + ' ' : '') + '(conflict copy)',
+        created: Date.now(), updated: Date.now(),
+      });
+      notes.set(copyId, copy);
+      setSrvMeta(copyId, 0, 0);
+      await saveNote(copyId); // ...and the local edits are preserved as a new note
+      toast('Note edited on two devices — kept both (see "conflict copy")');
+    }
+  }
+  if (currentId === id) openEditor(id, { keepMode: true });
+  renderBoard();
 }
 
 /* ================= sync ================= */
@@ -248,6 +413,33 @@ function setSync(state) {
   d.title = state === 'busy' ? 'Syncing…' : state === 'err' ? 'Offline — changes queued' : 'Synced';
 }
 
+let syncDebounce = null;
+function debouncedSync() {
+  clearTimeout(syncDebounce);
+  syncDebounce = setTimeout(() => syncNow().catch(() => {}), 400);
+}
+
+// EventSource: server pushes {id,version,origin} on any write; we ignore our
+// own echoes and coalesce the rest into a delta pull. Falls back to the 30s
+// poll if SSE is unavailable. EventSource can't send auth headers, so we mint
+// a short-lived signed ticket first.
+async function startEvents() {
+  if (!window.EventSource || !FNCrypto.isUnlocked()) return;
+  try {
+    const t = await (await api('/api/events/ticket', { method: 'POST' })).json();
+    if (es) es.close();
+    es = new EventSource('/api/events?ticket=' + encodeURIComponent(t.ticket));
+    es.onmessage = (ev) => {
+      try { const d = JSON.parse(ev.data); if (d.origin === CLIENT_ID) return; } catch (e) {}
+      debouncedSync();
+    };
+    es.onerror = () => {
+      if (es) { es.close(); es = null; }
+      setTimeout(() => { if (FNCrypto.isUnlocked()) startEvents(); }, 5000); // re-ticket & reconnect
+    };
+  } catch (e) { /* SSE unavailable — the poll keeps things in sync */ }
+}
+
 async function syncNow() {
   setSync('busy');
   try {
@@ -255,27 +447,11 @@ async function syncNow() {
     const last = (await idb.get('kv', 'lastSync')) || 0;
     const r = await api('/api/notes?since=' + last);
     const { notes: incoming, now } = await r.json();
-    let changed = false;
     for (const rec of incoming) {
-      const localSrv = srvMeta.get(rec.id) || 0;
-      if (rec.updated_at <= localSrv) continue;
-      if (rec.deleted) {
-        notes.delete(rec.id); srvMeta.set(rec.id, rec.updated_at);
-        await idb.put('notes', { id: rec.id, deleted: true, updated_at: rec.updated_at });
-        if (currentId === rec.id) closeEditor();
-        changed = true;
-        continue;
-      }
-      try {
-        const obj = await FNCrypto.decryptJSON(rec.blob);
-        notes.set(rec.id, obj);
-        srvMeta.set(rec.id, rec.updated_at);
-        await idb.put('notes', { id: rec.id, blob: rec.blob, updated_at: rec.updated_at });
-        changed = true;
-      } catch (e) { console.warn('decrypt failed for', rec.id); }
+      if (rec.updated_at <= srvUpdated(rec.id)) continue; // already have this (incl. our own echoes)
+      await reconcile(rec.id, rec); // handles merge, conflict-copy, open-editor protection
     }
     await idb.put('kv', now, 'lastSync');
-    if (changed) renderBoard();
     setSync('ok');
   } catch (e) {
     if (e.message !== 'unauthorized') setSync('err');
@@ -302,11 +478,16 @@ async function flushPending() {
         if (op.kind === 'put') {
           const r = await api('/api/notes/' + op.id, {
             method: 'PUT', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ blob: op.blob }),
+            body: JSON.stringify({ blob: op.blob, base_version: srvVersion(op.id) }),
           });
-          const { updated_at } = await r.json();
-          srvMeta.set(op.id, updated_at);
-          if (notes.has(op.id)) await idb.put('notes', { id: op.id, blob: op.blob, updated_at });
+          if (r.status === 409) {
+            const { note } = await r.json(); // someone else wrote first
+            await reconcile(op.id, note);    // merge or conflict-copy, then re-queue
+          } else {
+            const { version, updated_at } = await r.json();
+            setSrvMeta(op.id, version, updated_at);
+            if (notes.has(op.id)) await idb.put('notes', { id: op.id, blob: op.blob, updated_at, version });
+          }
         } else if (op.kind === 'del') {
           await api('/api/notes/' + op.id, { method: 'DELETE' });
         } else if (op.kind === 'img') {
@@ -450,7 +631,10 @@ async function saveNote(id) {
   n.updated = Date.now();
   const { aiBusy, ...persistable } = n; // transient flags never hit disk
   const blob = await FNCrypto.encryptJSON(persistable);
-  await idb.put('notes', { id, blob, updated_at: srvMeta.get(id) || 0 });
+  // NOTE: we do NOT overwrite the cached `notes` record here — that record holds
+  // the last server-CONFIRMED blob, which reconcile() needs as the 3-way merge
+  // base. The optimistic local edit lives in the pending queue (and in memory)
+  // and is replayed over the base on reload.
   await queueOp({ kind: 'put', id, blob });
   renderBoard();
 }
@@ -473,7 +657,7 @@ function scheduleSave(id) {
 async function deleteNote(id) {
   const n = notes.get(id);
   notes.delete(id);
-  await idb.put('notes', { id, deleted: true, updated_at: srvMeta.get(id) || 0 });
+  await idb.put('notes', { id, deleted: true, updated_at: srvUpdated(id), version: srvVersion(id) });
   await queueOp({ kind: 'del', id });
   for (const im of (n && n.images) || []) {
     await idb.del('images', im);
