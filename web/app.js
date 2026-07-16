@@ -55,6 +55,13 @@ let aiOn = false;         // server has AI cover keys configured
 const aiTimers = new Map();
 
 const $ = (id) => document.getElementById(id);
+// Editor status line. gen=true shows the animated "…" loop (cover generation).
+function setStatus(text, gen) {
+  const el = $('ed-status');
+  el.classList.toggle('gen', !!gen);
+  el.textContent = text;
+}
+const isGenerating = () => $('ed-status').classList.contains('gen');
 const toast = (msg) => {
   const t = $('toast');
   t.textContent = msg;
@@ -403,7 +410,7 @@ async function generateCover(id, manual) {
   if (n.aiBusy) return;
   n.aiBusy = true;
   n.aiTried = true;
-  if (currentId === id) $('ed-status').textContent = 'Generating cover…';
+  if (currentId === id) setStatus('Generating cover', true);
   try {
     const r = await api('/api/ai/cover', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -427,11 +434,11 @@ async function generateCover(id, manual) {
     n.cover = imgId;
     delete n.aiBusy;
     await saveNote(id);
-    if (currentId === id) { openEditor(id, { keepMode: true }); $('ed-status').textContent = 'Cover generated'; }
+    if (currentId === id) { openEditor(id, { keepMode: true }); setStatus('Cover generated'); }
   } catch (e) {
     delete n.aiBusy;
     await saveNote(id); // persist aiTried so we don't loop on failures
-    if (currentId === id) $('ed-status').textContent = '';
+    if (currentId === id) setStatus('');
     if (manual) toast('Cover generation failed');
   }
 }
@@ -450,7 +457,7 @@ async function saveNote(id) {
 
 let dirtySince = null; // max-wait guard: force a save at least every 5s while typing
 function scheduleSave(id) {
-  $('ed-status').textContent = 'Saving…';
+  if (!isGenerating()) setStatus('Saving…');
   const now = Date.now();
   if (dirtySince === null) dirtySince = now;
   clearTimeout(saveTimer);
@@ -458,7 +465,7 @@ function scheduleSave(id) {
   saveTimer = setTimeout(async () => {
     dirtySince = null;
     await saveNote(id);
-    $('ed-status').textContent = 'Saved';
+    if (!isGenerating()) setStatus('Saved');
     maybeAutoCover(id);
   }, wait);
 }
@@ -706,7 +713,6 @@ function wireUI() {
     renderBoard();
   });
 
-  $('ed-close').onclick = closeEditor;
   $('ed-title').addEventListener('input', () => {
     const n = notes.get(currentId);
     if (!n) return;
