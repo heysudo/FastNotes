@@ -1,0 +1,6 @@
+FROM node:22-slim
+RUN npm install -g @anthropic-ai/claude-code && npm cache clean --force
+COPY worker.mjs /srv/worker.mjs
+ENV HOME=/root
+EXPOSE 7777 8080
+CMD ["node", "/srv/worker.mjs"]

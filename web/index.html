@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#202124">
+<title>FastNotes</title>
+<link rel="stylesheet" href="style.css">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+</head>
+<body>
+
+<!-- unlock screen -->
+<div id="unlock">
+  <div class="logo">
+    <svg viewBox="0 0 48 48"><path fill="#fbbc04" d="M14 4h20a4 4 0 0 1 4 4v30l-8 6H14a4 4 0 0 1-4-4V8a4 4 0 0 1 4-4z"/><path fill="#f29900" d="M30 44v-6a2 2 0 0 1 2-2h6z"/><path fill="#202124" d="M22 30l-5.5-5.5 2.4-2.4 3.1 3.1 7.1-7.2 2.4 2.4z"/></svg>
+    <span>FastNotes</span>
+  </div>
+  <div class="sub" id="unlock-sub">Enter your master password to decrypt your notes. Nothing is stored or readable on the server without it.</div>
+  <form id="unlock-form" autocomplete="off">
+    <input type="password" id="pw" placeholder="Master password" autofocus autocomplete="current-password">
+    <input type="password" id="pw2" placeholder="Confirm master password" style="display:none" autocomplete="new-password">
+    <button class="go" id="unlock-btn" type="submit">Unlock</button>
+    <div class="err" id="unlock-err"></div>
+  </form>
+</div>
+
+<!-- main app -->
+<div id="app" style="display:none">
+  <div id="topbar">
+    <div class="brand">
+      <svg viewBox="0 0 48 48"><path fill="#fbbc04" d="M14 4h20a4 4 0 0 1 4 4v30l-8 6H14a4 4 0 0 1-4-4V8a4 4 0 0 1 4-4z"/><path fill="#f29900" d="M30 44v-6a2 2 0 0 1 2-2h6z"/><path fill="#202124" d="M22 30l-5.5-5.5 2.4-2.4 3.1 3.1 7.1-7.2 2.4 2.4z"/></svg>
+      <span>FastNotes</span>
+    </div>
+    <div id="search">
+      <svg viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27a6.5 6.5 0 1 0-.7.7l.27.28v.79l5 4.99L20.49 19zm-6 0A4.5 4.5 0 1 1 14 9.5 4.5 4.5 0 0 1 9.5 14z"/></svg>
+      <input id="q" placeholder="Search" autocomplete="off">
+    </div>
+    <div class="spacer"></div>
+    <div id="syncdot" title="Synced"></div>
+    <button class="iconbtn" id="export-btn" title="Download encrypted backup">
+      <svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7zM5 18v2h14v-2z"/></svg>
+    </button>
+    <button class="iconbtn" id="lock-btn" title="Lock">
+      <svg viewBox="0 0 24 24"><path d="M18 8h-1V6a5 5 0 0 0-10 0v2H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V10a2 2 0 0 0-2-2zM9 6a3 3 0 0 1 6 0v2H9zm9 14H6V10h12z"/></svg>
+    </button>
+  </div>
+
+  <div id="quickadd">
+    <div class="box" id="quickadd-box">
+      <input id="qa-input" placeholder="Take a note…" autocomplete="off">
+      <button class="iconbtn" id="qa-img" title="New note with image">
+        <svg viewBox="0 0 24 24"><path d="M21 19V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2zM8.5 13.5l2.5 3 3.5-4.5 4.5 6H5z"/></svg>
+      </button>
+    </div>
+  </div>
+
+  <div id="board">
+    <div id="pinned-wrap" style="display:none">
+      <div class="section-label">Pinned</div>
+      <div class="masonry" id="masonry-pinned"></div>
+    </div>
+    <div id="others-wrap">
+      <div class="section-label" id="others-label" style="display:none">Others</div>
+      <div class="masonry" id="masonry-others"></div>
+    </div>
+    <div id="empty">
+      <svg viewBox="0 0 24 24"><path d="M9 21c0 .55.45 1 1 1h4c.55 0 1-.45 1-1v-1H9v1zm3-19C8.14 2 5 5.14 5 9c0 2.38 1.19 4.47 3 5.74V17c0 .55.45 1 1 1h6c.55 0 1-.45 1-1v-2.26c1.81-1.27 3-3.36 3-5.74 0-3.86-3.14-7-7-7z"/></svg>
+      <div>Notes you add appear here</div>
+    </div>
+  </div>
+
+  <!-- editor sidebar -->
+  <div id="editor">
+    <button class="iconbtn ed-close-x" id="ed-close-x" title="Close (Esc)">
+      <svg viewBox="0 0 24 24"><path fill="#e8eaed" d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+    </button>
+    <div class="coverwrap" id="coverwrap">
+      <img id="cover-img" alt="">
+      <div class="coverbtns">
+        <button id="cover-change">Change cover</button>
+        <button id="cover-remove">Remove</button>
+      </div>
+    </div>
+    <div class="head">
+      <input class="title" id="ed-title" placeholder="Title" autocomplete="off">
+      <button class="iconbtn" id="ed-pin" title="Pin">
+        <svg viewBox="0 0 24 24"><path d="M16 9V4h1c.55 0 1-.45 1-1s-.45-1-1-1H7c-.55 0-1 .45-1 1s.45 1 1 1h1v5c0 1.66-1.34 3-3 3v2h5.97v7l1 1 1-1v-7H19v-2c-1.66 0-3-1.34-3-3z"/></svg>
+      </button>
+    </div>
+    <div class="body" id="ed-body">
+      <div class="rendered" id="ed-rendered"></div>
+      <textarea class="md" id="ed-md" style="display:none" placeholder="Note (markdown supported)"></textarea>
+    </div>
+    <div class="toolbar">
+      <button class="iconbtn" id="ed-mode" title="Toggle edit / preview (Ctrl+E)">
+        <svg viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
+      </button>
+      <button class="iconbtn" id="ed-color" title="Note color">
+        <svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 0 0 0 18 1.5 1.5 0 0 0 1.11-2.51c-.26-.29-.42-.66-.42-1.06 0-.89.72-1.61 1.61-1.61H16a5 5 0 0 0 5-5c0-4.42-4.03-7.82-9-7.82zM6.5 12a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zm3-4a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zm5 0a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zm3 4a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3z"/></svg>
+      </button>
+      <button class="iconbtn" id="ed-image" title="Add image">
+        <svg viewBox="0 0 24 24"><path d="M21 19V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2zM8.5 13.5l2.5 3 3.5-4.5 4.5 6H5z"/></svg>
+      </button>
+      <button class="iconbtn" id="ed-ai" title="Generate AI cover" style="display:none">
+        <svg viewBox="0 0 24 24"><path d="M19 9l1.25-2.75L23 5l-2.75-1.25L19 1l-1.25 2.75L15 5l2.75 1.25L19 9zm-7.5.5L9 4 6.5 9.5 1 12l5.5 2.5L9 20l2.5-5.5L17 12l-5.5-2.5zM19 15l-1.25 2.75L15 19l2.75 1.25L19 23l1.25-2.75L23 19l-2.75-1.25L19 15z"/></svg>
+      </button>
+      <button class="iconbtn" id="ed-delete" title="Delete note">
+        <svg viewBox="0 0 24 24"><path d="M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6zM19 4h-3.5l-1-1h-5l-1 1H5v2h14z"/></svg>
+      </button>
+      <span class="status" id="ed-status"></span>
+      <button class="iconbtn" id="ed-close" title="Close (Esc)">
+        <svg viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+      </button>
+    </div>
+  </div>
+
+  <div id="palette"></div>
+  <input type="file" id="file-input" accept="image/*" style="display:none">
+</div>
+
+<div id="toast"></div>
+
+<script src="vendor/marked.min.js"></script>
+<script src="vendor/purify.min.js"></script>
+<script src="crypto.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

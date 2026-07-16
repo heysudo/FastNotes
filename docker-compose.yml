@@ -1,0 +1,59 @@
+# FastNotes — standalone deployment.
+#
+#   Default:            app on 127.0.0.1:8484 (put your own reverse proxy in front)
+#   With bundled HTTPS: COMPOSE_PROFILES=caddy DOMAIN=notes.example.com docker compose up -d
+#   With MCP AI worker: COMPOSE_PROFILES=worker docker compose up -d   (see README)
+#
+# Behind an existing reverse-proxy docker network (nginx-proxy-manager, traefik...)
+# use docker-compose.npm.yml instead.
+services:
+  fastnotes:
+    build: .
+    container_name: fastnotes
+    restart: unless-stopped
+    ports:
+      - "${FN_BIND:-127.0.0.1}:${FN_PORT:-8484}:8000"
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - HF_API_KEY=${HF_API_KEY:-}
+      - HF_API_SECRET=${HF_API_SECRET:-}
+      - LLM_PROVIDER=${LLM_PROVIDER:-}
+      - LLM_MODEL=${LLM_MODEL:-}
+      - IMAGE_PROVIDER=${IMAGE_PROVIDER:-}
+      - IMAGE_MODEL=${IMAGE_MODEL:-}
+      - AI_WORKER_URL=${AI_WORKER_URL:-}
+    volumes:
+      - ./data:/data
+
+  caddy:
+    profiles: ["caddy"]
+    image: caddy:2-alpine
+    container_name: fastnotes-caddy
+    restart: unless-stopped
+    command: caddy reverse-proxy --from https://${DOMAIN:-localhost} --to fastnotes:8000
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy_data:/data
+    depends_on:
+      - fastnotes
+
+  fastnotes-ai:
+    profiles: ["worker"]
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: fastnotes-ai
+    restart: unless-stopped
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+    volumes:
+      - ./claude-worker-home:/root
+    ports:
+      - "127.0.0.1:18081:8080"   # loopback-only OAuth callback relay for one-time MCP setup
+
+volumes:
+  caddy_data:

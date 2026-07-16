@@ -1,0 +1,11 @@
+# secrets & local state — never commit
+.env
+data/
+claude-worker-home/
+*.pem
+*.key
+
+# build artifacts
+fastnotes
+server/web/
+node_modules/

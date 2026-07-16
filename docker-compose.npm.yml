@@ -1,0 +1,50 @@
+# FastNotes behind an EXISTING reverse-proxy docker network
+# (nginx-proxy-manager, traefik, caddy-docker-proxy, ...).
+#
+#   Set PROXY_NETWORK in .env to your proxy's docker network, then:
+#     docker compose -f docker-compose.npm.yml up -d --build
+#   Point your proxy at container "fastnotes", port 8000 (websockets on).
+#
+#   Optional AI worker (Claude Code + Higgsfield MCP, see README):
+#     docker compose -f docker-compose.npm.yml --profile worker up -d --build
+services:
+  fastnotes:
+    build: .
+    container_name: fastnotes
+    restart: unless-stopped
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - HF_API_KEY=${HF_API_KEY:-}
+      - HF_API_SECRET=${HF_API_SECRET:-}
+      - LLM_PROVIDER=${LLM_PROVIDER:-}
+      - LLM_MODEL=${LLM_MODEL:-}
+      - IMAGE_PROVIDER=${IMAGE_PROVIDER:-}
+      - IMAGE_MODEL=${IMAGE_MODEL:-}
+      - AI_WORKER_URL=${AI_WORKER_URL:-}
+    volumes:
+      - ./data:/data
+    networks:
+      - proxy
+
+  fastnotes-ai:
+    profiles: ["worker"]
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: fastnotes-ai
+    restart: unless-stopped
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+    volumes:
+      - ./claude-worker-home:/root
+    ports:
+      - "127.0.0.1:18081:8080"
+    networks:
+      - proxy
+
+networks:
+  proxy:
+    external: true
+    name: ${PROXY_NETWORK:?set PROXY_NETWORK in .env}
