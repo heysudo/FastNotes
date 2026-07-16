@@ -32,6 +32,7 @@ write — with no connection at all.
 | 🖼️ **Image covers** | Attach or paste an image and it becomes the note's card cover, with Notion-style change / remove controls. |
 | 🤖 **AI cover art** *(optional)* | Bring your own key (OpenAI, Gemini, Anthropic, or Higgsfield). Notes that mention a brand get a clean logo-on-brand-color cover; everything else gets a minimal icon. |
 | ⚡ **Local-first & offline** | Encrypted notes cached in IndexedDB paint the board in ~200 ms; edits queue offline and sync when you reconnect. A service worker caches the app shell so it opens with no network. |
+| 🔁 **Real-time, lossless sync** | Changes push to your other open devices in ~0.5 s over SSE. Per-note versioning + 3-way merge means concurrent edits are merged automatically, and genuinely conflicting edits are kept as a *(conflict copy)* — never silently overwritten. |
 | 🔐 **Auto-lock** | Keys are wiped from memory after 2 minutes of the tab being inactive, and never persist to disk. |
 
 ---
@@ -244,9 +245,17 @@ scratch`. `web/` is dependency-free vanilla JavaScript with a hand-rolled
 shortest-column masonry;
 [marked.js](https://github.com/markedjs/marked) and
 [DOMPurify](https://github.com/cure53/DOMPurify) are vendored locally for safe
-markdown rendering. Notes sync as encrypted deltas via
-`GET /api/notes?since=<ms>`; offline edits are held in an IndexedDB op-log and
-flushed on reconnect.
+markdown rendering.
+
+**Sync.** Notes pull as encrypted deltas via `GET /api/notes?since=<ms>`, and a
+lightweight SSE stream (`GET /api/events`) notifies open clients the instant
+anything changes so they pull within ~0.5 s. Each note carries a monotonic
+version; writes use optimistic concurrency (`base_version`) and the server
+rejects a stale write with `409` rather than overwriting. The client then
+3-way-merges (diff3) the base, local, and remote versions — a clean merge is
+pushed back, an unmergeable one is preserved as a *(conflict copy)*. Offline
+edits are held in an IndexedDB op-log and replayed on reconnect. All of this
+operates on ciphertext; the server never sees a merge or a plaintext note.
 
 ---
 
