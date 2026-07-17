@@ -720,6 +720,11 @@ async function importTakeout(file) {
   const imgIndex = new Map();
   for (const n of zip.names) if (/\.(jpe?g|png|gif|webp|heic|bmp)$/i.test(n)) imgIndex.set(n.split('/').pop(), n);
 
+  // content signatures of notes already present, so re-imports and cross-account
+  // overlap (the same note owned by another account) are skipped, not duplicated.
+  const sigOf = n => (n.title || '').trim() + ' ' + (n.md || '').trim();
+  const existingSigs = new Set([...notes.values()].map(sigOf));
+
   let imported = 0, skipped = 0, images = 0;
   for (let i = 0; i < names.length; i++) {
     setStat(`Importing note ${i + 1} of ${names.length}…`, 5 + Math.round(90 * i / names.length));
@@ -730,6 +735,8 @@ async function importTakeout(file) {
     const id = await keepStableId(k, names[i]);
     if (notes.has(id)) { skipped++; continue; } // already imported previously
     const obj = keepToNote(k);
+    if (existingSigs.has(sigOf(obj))) { skipped++; continue; } // identical content already present
+    existingSigs.add(sigOf(obj));
     for (const att of k.attachments || []) {
       const base = (att.filePath || '').split('/').pop();
       const zn = imgIndex.get(base) || [...imgIndex.keys()].find(bn => base && bn.startsWith(base.replace(/\.[^.]+$/, '')));
