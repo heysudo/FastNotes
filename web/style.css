@@ -4,13 +4,10 @@
   src: url('fonts/noto-serif-700.woff2') format('woff2');
   font-weight: 700; font-style: normal; font-display: swap;
 }
-@font-face {
-  font-family: 'Noto Sans';
-  src: url('fonts/noto-sans-100.woff2') format('woff2');
-  font-weight: 100; font-style: normal; font-display: swap;
-}
+/* Body text uses the platform's native UI font (system-ui). */
 
 :root {
+  --body-font: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
   --bg: #202124;
   --surface: #202124;
   --card-bg: #202124;
@@ -132,7 +129,7 @@ input, textarea { background: none; border: none; color: inherit; font: inherit;
   font-size: 15.5px; margin-bottom: 6px; word-wrap: break-word;
 }
 .card .preview {
-  font-family: 'Noto Sans', sans-serif; font-weight: 100;
+  font-family: var(--body-font); font-weight: 400;
   font-size: 13.5px; color: var(--text);
   max-height: 280px; overflow: hidden; word-wrap: break-word;
 }
@@ -205,7 +202,7 @@ input, textarea { background: none; border: none; color: inherit; font: inherit;
   color: var(--text);
 }
 #editor .rendered {
-  font-family: 'Noto Sans', sans-serif; font-weight: 100;
+  font-family: var(--body-font); font-weight: 400;
   font-size: 15px; line-height: 1.6; min-height: 300px; cursor: text;
 }
 .rendered h1, .rendered h2, .rendered h3 { font-family: 'Noto Serif', Georgia, serif; font-weight: 700; }
