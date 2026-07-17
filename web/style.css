@@ -283,6 +283,21 @@ input, textarea { background: none; border: none; color: inherit; font: inherit;
 }
 #toast.show { transform: translate(-50%, 0); }
 
+#import-overlay {
+  position: fixed; inset: 0; z-index: 95; display: none;
+  align-items: center; justify-content: center; background: rgba(32,33,36,.86);
+}
+#import-overlay.open { display: flex; }
+#import-overlay .box {
+  background: #2d2e31; border: 1px solid var(--card-border); border-radius: 12px;
+  padding: 26px 30px; width: 360px; box-shadow: 0 8px 30px rgba(0,0,0,.6);
+}
+#import-overlay .logo { display: flex; align-items: center; gap: 10px; font-size: 16px; font-weight: 500; margin-bottom: 18px; }
+#import-overlay .logo svg { width: 26px; height: 26px; }
+#import-overlay .bar { height: 6px; background: #202124; border-radius: 3px; overflow: hidden; }
+#import-overlay .fill { height: 100%; width: 0; background: #8ab4f8; transition: width .2s; }
+#import-overlay .stat { margin-top: 12px; font-size: 13px; color: var(--text-dim); }
+
 #empty {
   text-align: center; color: var(--text-dim); margin-top: 12vh; display: none;
 }
