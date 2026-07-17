@@ -227,7 +227,7 @@ input, textarea { background: none; border: none; color: inherit; font: inherit;
 .rendered .empty-hint { color: var(--text-dim); }
 
 #editor .toolbar {
-  flex: none; display: flex; align-items: center; gap: 2px;
+  position: relative; flex: none; display: flex; align-items: center; gap: 2px;
   padding: 8px 14px; border-top: 1px solid var(--topbar-border);
 }
 #editor .toolbar .status { margin-left: auto; font-size: 12px; color: var(--text-dim); padding-right: 6px; }
@@ -277,6 +277,7 @@ input, textarea { background: none; border: none; color: inherit; font: inherit;
   position: fixed; bottom: 24px; left: 50%; transform: translate(-50%, 80px);
   background: #e8eaed; color: #202124; padding: 12px 20px; border-radius: 8px;
   font-size: 14px; z-index: 90; transition: transform .25s; box-shadow: 0 4px 12px rgba(0,0,0,.4);
+  pointer-events: none; /* informational only — must never block taps (e.g. the FAB) */
 }
 #toast.show { transform: translate(-50%, 0); }
 
@@ -300,7 +301,79 @@ input, textarea { background: none; border: none; color: inherit; font: inherit;
 }
 #empty svg { width: 100px; height: 100px; fill: #3c4043; margin-bottom: 14px; }
 
+/* ---------- floating action button (mobile) ---------- */
+#fab {
+  display: none;
+  position: fixed; right: 18px; bottom: calc(22px + env(safe-area-inset-bottom, 0px));
+  width: 58px; height: 58px; border-radius: 18px; z-index: 35;
+  background: #a8c7fa; color: #062e6f;
+  box-shadow: 0 4px 14px rgba(0,0,0,.5);
+  align-items: center; justify-content: center;
+}
+#fab:active { transform: scale(.95); }
+#fab svg { width: 26px; height: 26px; }
+
+/* back arrow in editor head — mobile only */
+#editor .ed-back { display: none; flex: none; }
+
+/* ---------- mobile (Keep-style) ---------- */
 @media (max-width: 600px) {
-  .card { width: calc(50vw - 30px); }
-  #editor { width: 100vw; }
+  /* top bar: icon + search pill + essentials, safe-area aware */
+  #topbar {
+    gap: 8px; padding: 8px 10px;
+    padding-top: calc(8px + env(safe-area-inset-top, 0px));
+  }
+  #topbar .brand span { display: none; }
+  #topbar .brand svg { width: 32px; height: 32px; }
+  #search { padding: 10px 14px; border-radius: 24px; }
+  #search input { font-size: 16px; } /* ≥16px: prevents iOS focus zoom */
+  #topbar #export-btn, #topbar #import-btn { display: none; } /* desktop-only chores */
+  #topbar .iconbtn, .iconbtn { width: 44px; height: 44px; } /* comfortable touch targets */
+
+  /* quick-add bar is replaced by the FAB */
+  #quickadd { display: none; }
+  #fab { display: flex; }
+
+  /* board: edge-to-edge 2-column masonry, room for the FAB */
+  #board { padding: 4px 8px calc(110px + env(safe-area-inset-bottom, 0px)); }
+  .section-label { margin: 14px 0 6px 4px; }
+  .card { border-radius: 10px; }
+  .card .inner { padding: 10px 12px; }
+  .card .title { font-size: 14.5px; }
+  .card .preview { font-size: 13px; max-height: 240px; }
+  .card .pinbtn { display: none; } /* no hover on touch; pin lives in the editor */
+
+  /* editor: full-screen sheet like Keep mobile */
+  #editor { width: 100vw; border-left: none; }
+  #editor .ed-back { display: inline-flex; }
+  #editor .ed-close-x { display: none; }   /* back arrow replaces it */
+  #editor .head {
+    padding: 8px 10px 0;
+    padding-top: calc(8px + env(safe-area-inset-top, 0px));
+  }
+  #editor:not(.has-cover) .head { padding-right: 10px; }
+  #editor.has-cover .head { padding-top: 8px; }
+  #editor .head input.title { font-size: 22px; }
+  #editor .coverwrap { max-height: 240px; }
+  #editor .coverbtns { opacity: 1; } /* no hover on touch — always visible */
+  #editor .body { padding: 4px 16px 16px; }
+  #editor .rendered { font-size: 16px; }
+  #editor textarea.md { font-size: 16px; } /* prevents iOS focus zoom */
+
+  /* bottom toolbar: spread out, big targets, above the home indicator */
+  #editor .toolbar {
+    padding: 6px 14px;
+    padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px));
+    gap: 6px; justify-content: space-around;
+  }
+  #editor .toolbar .status { position: absolute; right: 14px; top: -26px;
+    background: rgba(32,33,36,.85); padding: 3px 10px; border-radius: 10px; margin: 0; }
+  #editor .toolbar .iconbtn { width: 48px; height: 48px; }
+  #editor .toolbar .iconbtn svg { width: 22px; height: 22px; }
+
+  /* unlock screen fits small viewports */
+  #unlock form { width: min(320px, 86vw); }
+  #unlock input[type=password] { font-size: 16px; }
+
+  #toast { bottom: calc(96px + env(safe-area-inset-bottom, 0px)); max-width: 86vw; text-align: center; }
 }

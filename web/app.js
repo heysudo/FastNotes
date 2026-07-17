@@ -891,18 +891,23 @@ function layoutMasonry(el) {
   const cards = [...el.children];
   if (!cards.length) { el.style.height = '0px'; return; }
   const bw = el.clientWidth;
-  const cols = Math.max(1, Math.floor((bw + GAP) / (COL_W + GAP)));
-  const width = cols * COL_W + (cols - 1) * GAP;
+  // Mobile (like Keep): exactly 2 edge-to-edge columns with a slim gutter.
+  // Desktop: as many fixed 240px columns as fit, centered.
+  const mobile = window.innerWidth <= 600;
+  const gap = mobile ? 8 : GAP;
+  const cols = mobile ? 2 : Math.max(1, Math.floor((bw + gap) / (COL_W + gap)));
+  const colW = mobile ? Math.floor((bw - gap * (cols - 1)) / cols) : COL_W;
+  const width = cols * colW + (cols - 1) * gap;
   const offsetX = Math.max(0, (bw - width) / 2);
   const heights = new Array(cols).fill(0);
   for (const c of cards) {
-    c.style.width = COL_W + 'px';
+    c.style.width = colW + 'px';
     const h = c.offsetHeight;
     let best = 0;
     for (let i = 1; i < cols; i++) if (heights[i] < heights[best]) best = i;
-    c.style.left = (offsetX + best * (COL_W + GAP)) + 'px';
+    c.style.left = (offsetX + best * (colW + gap)) + 'px';
     c.style.top = heights[best] + 'px';
-    heights[best] += h + GAP;
+    heights[best] += h + gap;
   }
   el.style.height = Math.max(...heights) + 'px';
 }
@@ -1085,6 +1090,11 @@ function wireUI() {
     else await addImageToNote(currentId, f);
   });
   $('ed-close-x').onclick = closeEditor;
+  $('ed-back').onclick = closeEditor;
+  $('fab').onclick = () => {
+    const id = newNote({});
+    saveNote(id).then(() => openEditor(id));
+  };
   $('ed-ai').onclick = () => generateCover(currentId, true);
   $('cover-change').onclick = () => { coverReplace = true; $('file-input').click(); };
   $('cover-remove').onclick = async () => {
