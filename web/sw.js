@@ -1,10 +1,10 @@
 // FastNotes service worker — offline app shell.
 // Static assets: cache-first with background refresh. API: network only
 // (ciphertext data is cached in IndexedDB by the app itself, not here).
-const CACHE = 'fastnotes-v5';
+const CACHE = 'fastnotes-v6';
 const SHELL = [
   '/', '/style.css', '/app.js', '/crypto.js',
-  '/vendor/marked.min.js', '/vendor/purify.min.js',
+  '/vendor/marked-15.0.12.min.js', '/vendor/purify-3.4.12.min.js',
   '/fonts/noto-serif-700.woff2',
   '/icons/icon.svg', '/icons/apple-touch-icon.png', '/manifest.webmanifest',
 ];

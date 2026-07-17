@@ -28,7 +28,7 @@ write — with no connection at all.
 |---|---|
 | 🔒 **Zero-knowledge** | AES-256-GCM with a key derived from your master password via PBKDF2-SHA256 (600k iterations), all client-side. The server stores only ciphertext, random IVs, and timestamps. |
 | 🗂️ **Keep-style board** | Masonry grid with pinned / others sections, note colors, instant client-side search, and a quick-add bar. |
-| ✍️ **Markdown notes** | Right-sidebar editor with live preview, tappable `- [ ]` checklists, tables, and code blocks. Titles in Noto Serif, body in Noto Sans. |
+| ✍️ **Markdown notes** | Right-sidebar editor with live preview, tappable `- [ ]` checklists, tables, and code blocks. Serif titles, native system-ui body text. Full-screen mobile editor. |
 | 🖼️ **Image covers** | Attach or paste an image and it becomes the note's card cover, with Notion-style change / remove controls. |
 | 🤖 **AI cover art** *(optional)* | Bring your own key (OpenAI, Gemini, Anthropic, or Higgsfield). Notes that mention a brand get a clean logo-on-brand-color cover; everything else gets a minimal icon. |
 | ⚡ **Local-first & offline** | Encrypted notes cached in IndexedDB paint the board in ~200 ms; edits queue offline and sync when you reconnect. A service worker caches the app shell so it opens with no network. |
