@@ -7,7 +7,6 @@ import (
 	"crypto/subtle"
 	"embed"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"io"
 	"io/fs"
@@ -27,14 +26,18 @@ import (
 var webFS embed.FS
 
 var (
-	db        *bolt.DB
-	bNotes    = []byte("notes")  // id -> json{blob, updated_at, deleted}
-	bImages   = []byte("images") // id -> raw encrypted bytes
-	bMeta     = []byte("meta")   // config: salt, auth_hash, kdf_iters
-	authMu    sync.Mutex
-	failures  = map[string][]int64{} // ip -> unix seconds of recent auth failures
-	authHash  []byte                 // cached sha256 of auth token
-	authKnown bool
+	db       *bolt.DB
+	bNotes   = []byte("notes")  // id -> json{blob, updated_at, deleted}
+	bImages  = []byte("images") // id -> raw encrypted bytes
+	bMeta    = []byte("meta")   // config: salt, auth_hash, kdf_iters
+	authMu   sync.Mutex
+	failures = map[string][]int64{} // ip -> unix seconds of recent auth failures
+
+	authStateMu sync.RWMutex // guards authHash / authKnown
+	authHash    []byte       // cached sha256 of auth token
+	authKnown   bool
+
+	trustedProxies []*net.IPNet // peers whose X-Forwarded-For header we honor
 )
 
 type noteRec struct {
@@ -71,6 +74,7 @@ func main() {
 		log.Fatal(err)
 	}
 	loadAuthHash()
+	initTrustedProxies()
 	initEvents()
 
 	mux := http.NewServeMux()
@@ -126,6 +130,7 @@ func securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Strict-Transport-Security", "max-age=63072000")
 		w.Header().Set("Content-Security-Policy",
 			"default-src 'self'; img-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; worker-src 'self'")
 		next.ServeHTTP(w, r)
@@ -136,21 +141,95 @@ func securityHeaders(next http.Handler) http.Handler {
 
 func loadAuthHash() {
 	db.View(func(tx *bolt.Tx) error {
-		v := tx.Bucket(bMeta).Get([]byte("auth_hash"))
-		if v != nil {
-			authHash = append([]byte(nil), v...)
-			authKnown = true
+		if v := tx.Bucket(bMeta).Get([]byte("auth_hash")); v != nil {
+			setAuth(v)
 		}
 		return nil
 	})
 }
 
-func clientIP(r *http.Request) string {
-	if xf := r.Header.Get("X-Forwarded-For"); xf != "" {
-		return strings.TrimSpace(strings.Split(xf, ",")[0])
+// authKnownSafe / getAuthHash / setAuth serialize all access to the auth-state
+// globals, which are read on every request and written during setup.
+func authKnownSafe() bool {
+	authStateMu.RLock()
+	defer authStateMu.RUnlock()
+	return authKnown
+}
+
+func getAuthHash() []byte {
+	authStateMu.RLock()
+	defer authStateMu.RUnlock()
+	return authHash
+}
+
+func setAuth(h []byte) {
+	authStateMu.Lock()
+	defer authStateMu.Unlock()
+	authHash = append([]byte(nil), h...)
+	authKnown = true
+}
+
+// initTrustedProxies parses TRUSTED_PROXIES (comma-separated IPs/CIDRs). Only
+// requests whose direct peer is in this set have their X-Forwarded-For honored;
+// for every other connection the header is ignored, so it cannot be spoofed to
+// defeat the per-IP rate limiter or to grow the failures map without bound.
+func initTrustedProxies() {
+	trustedProxies = nil
+	for _, c := range strings.Split(os.Getenv("TRUSTED_PROXIES"), ",") {
+		c = strings.TrimSpace(c)
+		if c == "" {
+			continue
+		}
+		if !strings.Contains(c, "/") {
+			if strings.Contains(c, ":") {
+				c += "/128"
+			} else {
+				c += "/32"
+			}
+		}
+		if _, n, err := net.ParseCIDR(c); err == nil {
+			trustedProxies = append(trustedProxies, n)
+		} else {
+			log.Printf("TRUSTED_PROXIES: ignoring invalid entry %q: %v", c, err)
+		}
 	}
-	h, _, _ := net.SplitHostPort(r.RemoteAddr)
-	return h
+}
+
+func isTrustedProxy(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	for _, n := range trustedProxies {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// clientIP returns the address used for rate-limiting. X-Forwarded-For is
+// consulted ONLY when the direct connection comes from a configured trusted
+// proxy; the value used is the right-most XFF entry that is not itself a trusted
+// proxy (i.e. the address our proxy actually observed). This prevents a client
+// from spoofing the header to evade the limiter.
+func clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	if !isTrustedProxy(net.ParseIP(host)) {
+		return host
+	}
+	parts := strings.Split(r.Header.Get("X-Forwarded-For"), ",")
+	for i := len(parts) - 1; i >= 0; i-- {
+		s := strings.TrimSpace(parts[i])
+		ip := net.ParseIP(s)
+		if ip == nil || isTrustedProxy(ip) {
+			continue
+		}
+		return s
+	}
+	return host
 }
 
 func rateLimited(ip string) bool {
@@ -162,6 +241,10 @@ func rateLimited(ip string) bool {
 		if now-t < 300 {
 			recent = append(recent, t)
 		}
+	}
+	if len(recent) == 0 {
+		delete(failures, ip) // don't retain empty buckets
+		return false
 	}
 	failures[ip] = recent
 	return len(recent) >= 10 // 10 failures per 5 min
@@ -175,7 +258,7 @@ func recordFailure(ip string) {
 
 func auth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !authKnown {
+		if !authKnownSafe() {
 			http.Error(w, `{"error":"not configured"}`, http.StatusForbidden)
 			return
 		}
@@ -192,7 +275,7 @@ func auth(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		h := sha256.Sum256(raw)
-		if subtle.ConstantTimeCompare(h[:], authHash) != 1 {
+		if subtle.ConstantTimeCompare(h[:], getAuthHash()) != 1 {
 			recordFailure(ip)
 			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 			return
@@ -204,7 +287,7 @@ func auth(next http.HandlerFunc) http.HandlerFunc {
 // ---------- handlers ----------
 
 func handleBootstrap(w http.ResponseWriter, _ *http.Request) {
-	resp := map[string]any{"configured": authKnown, "ai": aiEnabled()}
+	resp := map[string]any{"configured": authKnownSafe(), "ai": aiEnabled()}
 	db.View(func(tx *bolt.Tx) error {
 		m := tx.Bucket(bMeta)
 		if s := m.Get([]byte("kdf_salt")); s != nil {
@@ -221,19 +304,29 @@ func handleBootstrap(w http.ResponseWriter, _ *http.Request) {
 
 // handleSetup registers the master password artifacts. Only allowed once.
 func handleSetup(w http.ResponseWriter, r *http.Request) {
-	if authKnown {
+	if authKnownSafe() {
 		http.Error(w, `{"error":"already configured"}`, http.StatusConflict)
 		return
 	}
 	var req struct {
-		Salt      string `json:"salt"`       // base64, client-generated
-		Iters     int    `json:"iters"`      // PBKDF2 iterations
-		AuthToken string `json:"auth_token"` // base64 HKDF-derived token
+		Salt       string `json:"salt"`        // base64, client-generated
+		Iters      int    `json:"iters"`       // PBKDF2 iterations
+		AuthToken  string `json:"auth_token"`  // base64 HKDF-derived token
+		SetupToken string `json:"setup_token"` // optional; required when SETUP_TOKEN is set
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil ||
 		req.Salt == "" || req.AuthToken == "" || req.Iters < 100000 {
 		http.Error(w, `{"error":"bad request"}`, http.StatusBadRequest)
 		return
+	}
+	// Optional guard against first-run (trust-on-first-use) takeover on a
+	// publicly-reachable setup endpoint: if the operator set SETUP_TOKEN, the
+	// very first registration must present it.
+	if want := os.Getenv("SETUP_TOKEN"); want != "" {
+		if subtle.ConstantTimeCompare([]byte(req.SetupToken), []byte(want)) != 1 {
+			http.Error(w, `{"error":"setup token required"}`, http.StatusUnauthorized)
+			return
+		}
 	}
 	raw, err := base64.StdEncoding.DecodeString(req.AuthToken)
 	if err != nil || len(raw) < 16 {
@@ -241,22 +334,36 @@ func handleSetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h := sha256.Sum256(raw)
+	wrote := false
 	err = db.Update(func(tx *bolt.Tx) error {
 		m := tx.Bucket(bMeta)
 		if m.Get([]byte("auth_hash")) != nil {
-			return nil
+			return nil // configured concurrently — never overwrite an existing hash
 		}
-		m.Put([]byte("kdf_salt"), []byte(req.Salt))
-		m.Put([]byte("kdf_iters"), []byte(strconv.Itoa(req.Iters)))
-		return m.Put([]byte("auth_hash"), h[:])
+		if e := m.Put([]byte("kdf_salt"), []byte(req.Salt)); e != nil {
+			return e
+		}
+		if e := m.Put([]byte("kdf_iters"), []byte(strconv.Itoa(req.Iters))); e != nil {
+			return e
+		}
+		if e := m.Put([]byte("auth_hash"), h[:]); e != nil {
+			return e
+		}
+		wrote = true
+		return nil
 	})
 	if err != nil {
 		http.Error(w, `{"error":"db"}`, http.StatusInternalServerError)
 		return
 	}
-	authHash = h[:]
-	authKnown = true
-	log.Printf("setup: master password registered (hash %s…)", hex.EncodeToString(h[:4]))
+	// Only adopt the in-memory hash if THIS request actually persisted it, so a
+	// racing setup can't diverge the cached hash from what's on disk.
+	if !wrote {
+		http.Error(w, `{"error":"already configured"}`, http.StatusConflict)
+		return
+	}
+	setAuth(h[:])
+	log.Printf("setup: master password registered")
 	writeJSON(w, map[string]any{"ok": true})
 }
 
@@ -344,6 +451,10 @@ func handleDeleteNote(w http.ResponseWriter, r *http.Request) {
 
 func handleGetImage(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	if !validID(id) {
+		http.Error(w, `{"error":"bad id"}`, http.StatusBadRequest)
+		return
+	}
 	var data []byte
 	db.View(func(tx *bolt.Tx) error {
 		if v := tx.Bucket(bImages).Get([]byte(id)); v != nil {
@@ -382,9 +493,16 @@ func handlePutImage(w http.ResponseWriter, r *http.Request) {
 
 func handleDeleteImage(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	db.Update(func(tx *bolt.Tx) error {
+	if !validID(id) {
+		http.Error(w, `{"error":"bad id"}`, http.StatusBadRequest)
+		return
+	}
+	if err := db.Update(func(tx *bolt.Tx) error {
 		return tx.Bucket(bImages).Delete([]byte(id))
-	})
+	}); err != nil {
+		http.Error(w, `{"error":"db"}`, http.StatusInternalServerError)
+		return
+	}
 	writeJSON(w, map[string]any{"ok": true})
 }
 

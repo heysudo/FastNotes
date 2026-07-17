@@ -19,6 +19,8 @@ import (
 	"time"
 )
 
+const maxSSEClients = 1024 // bound concurrent event streams
+
 type eventHub struct {
 	mu   sync.Mutex
 	subs map[chan string]struct{}
@@ -35,12 +37,15 @@ func initEvents() {
 	rand.Read(sseSecret)
 }
 
-func (h *eventHub) subscribe() chan string {
-	ch := make(chan string, 16)
+func (h *eventHub) subscribe() (chan string, bool) {
 	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.subs) >= maxSSEClients {
+		return nil, false
+	}
+	ch := make(chan string, 16)
 	h.subs[ch] = struct{}{}
-	h.mu.Unlock()
-	return ch
+	return ch, true
 }
 
 func (h *eventHub) unsubscribe(ch chan string) {
@@ -70,11 +75,16 @@ func (h *eventHub) broadcast(id string, version int, origin string) {
 // ---- tickets: EventSource can't send Authorization headers, so an
 // authenticated request mints a short-lived signed ticket used as a query param. ----
 
-func signTicket(expUnix int64) string {
-	msg := strconv.FormatInt(expUnix, 10)
+func ticketMAC(msg string) []byte {
 	mac := hmac.New(sha256.New, sseSecret)
 	mac.Write([]byte(msg))
-	return msg + "." + hex.EncodeToString(mac.Sum(nil))
+	mac.Write(getAuthHash()) // bind the ticket to the current identity
+	return mac.Sum(nil)
+}
+
+func signTicket(expUnix int64) string {
+	msg := strconv.FormatInt(expUnix, 10)
+	return msg + "." + hex.EncodeToString(ticketMAC(msg))
 }
 
 func verifyTicket(t string) bool {
@@ -86,14 +96,12 @@ func verifyTicket(t string) bool {
 	if err != nil || time.Now().Unix() > exp {
 		return false
 	}
-	mac := hmac.New(sha256.New, sseSecret)
-	mac.Write([]byte(parts[0]))
-	want := hex.EncodeToString(mac.Sum(nil))
+	want := hex.EncodeToString(ticketMAC(parts[0]))
 	return hmac.Equal([]byte(want), []byte(parts[1]))
 }
 
 func handleEventTicket(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, map[string]any{"ticket": signTicket(time.Now().Add(12 * time.Hour).Unix())})
+	writeJSON(w, map[string]any{"ticket": signTicket(time.Now().Add(time.Hour).Unix())})
 }
 
 func handleEvents(w http.ResponseWriter, r *http.Request) {
@@ -106,6 +114,13 @@ func handleEvents(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
 		return
 	}
+	ch, ok := events.subscribe()
+	if !ok {
+		http.Error(w, `{"error":"too many connections"}`, http.StatusServiceUnavailable)
+		return
+	}
+	defer events.unsubscribe(ch)
+
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -114,8 +129,6 @@ func handleEvents(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, "retry: 3000\n\n") // client reconnect backoff
 	flusher.Flush()
 
-	ch := events.subscribe()
-	defer events.unsubscribe(ch)
 	ping := time.NewTicker(25 * time.Second)
 	defer ping.Stop()
 

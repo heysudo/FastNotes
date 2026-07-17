@@ -128,6 +128,7 @@ async function boot() {
     }
   }
   const firstRun = !bs.configured && !offline;
+  let setupTokenValue = ''; // only used if the server sets SETUP_TOKEN
   if (firstRun) {
     $('unlock-sub').textContent = 'First run — choose a master password. It encrypts everything and is NOT recoverable if forgotten.';
     $('pw2').style.display = '';
@@ -146,11 +147,17 @@ async function boot() {
       if (firstRun) {
         const salt = FNCrypto.newSalt();
         const token = await FNCrypto.unlock(pw, salt, FNCrypto.DEFAULT_ITERS);
-        const r = await fetch('/api/setup', {
+        const doSetup = () => fetch('/api/setup', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ salt, iters: FNCrypto.DEFAULT_ITERS, auth_token: token }),
+          body: JSON.stringify({ salt, iters: FNCrypto.DEFAULT_ITERS, auth_token: token, setup_token: setupTokenValue }),
         });
-        if (!r.ok) throw new Error('setup failed');
+        let r = await doSetup();
+        if (r.status === 401) {
+          // Operator guarded first-run with SETUP_TOKEN — ask for it and retry once.
+          const t = prompt('This server requires a one-time setup token to create the account. Ask the operator for the SETUP_TOKEN they configured:');
+          if (t && t.trim()) { setupTokenValue = t.trim(); r = await doSetup(); }
+        }
+        if (!r.ok) throw new Error(r.status === 401 ? 'setup token missing or invalid' : 'setup failed');
         // refresh the offline-unlock cache with the real salt
         await idb.put('kv', { configured: true, salt, iters: FNCrypto.DEFAULT_ITERS, ai: bs.ai }, 'bootstrap');
       } else {

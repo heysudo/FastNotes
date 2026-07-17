@@ -24,6 +24,8 @@ services:
       - IMAGE_PROVIDER=${IMAGE_PROVIDER:-}
       - IMAGE_MODEL=${IMAGE_MODEL:-}
       - AI_WORKER_URL=${AI_WORKER_URL:-}
+      - TRUSTED_PROXIES=${TRUSTED_PROXIES:-}
+      - SETUP_TOKEN=${SETUP_TOKEN:-}
     volumes:
       - ./data:/data
 

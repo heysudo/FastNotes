@@ -230,10 +230,23 @@ and delete `~/fastnotes/data/`.
   [bbolt](https://github.com/etcd-io/bbolt)) persists ciphertext, random IVs, and
   timestamps only.
 - **Authentication** — the API token is derived from the password on a separate
-  HKDF branch; the server stores only its SHA-256 and rate-limits failed
-  attempts (10 per 5 minutes per IP).
-- **No third parties** — no CDN calls, no analytics, no telemetry. The only
-  outbound requests are the optional AI-cover calls you explicitly enable.
+  HKDF branch; the server stores only its SHA-256 and rate-limits failed attempts
+  (10 per 5 minutes). By default `X-Forwarded-For` is ignored (trusted from no
+  one, so it can't be spoofed to evade the limit) and the cap is global — fine
+  for a single-master-password app. To get accurate per-client limiting behind a
+  proxy, set `TRUSTED_PROXIES` to your proxy's exact address; do **not** trust a
+  whole shared Docker subnet, or co-tenant containers could forge the header.
+- **First-run protection** — the setup endpoint that registers your master
+  password works only once. If that page is reachable from the internet before
+  you create your account, set `SETUP_TOKEN` in `.env`; first-run then requires
+  it (you're prompted in the browser), preventing a stranger from claiming the
+  instance.
+- **Transport** — responses carry `HSTS`, a strict `Content-Security-Policy`
+  (`script-src 'self'`, no third-party origins), `X-Frame-Options: DENY`, and
+  `nosniff`. Always terminate TLS in front of FastNotes.
+- **No third parties** — no CDN calls, no analytics, no telemetry. `marked` and
+  `DOMPurify` are vendored and kept current. The only outbound requests are the
+  optional AI-cover calls you explicitly enable.
 
 ---
 
